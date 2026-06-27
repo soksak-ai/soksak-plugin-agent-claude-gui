@@ -305,7 +305,7 @@ export default {
       "empty.no-fs":        { en: "No core fs socket — re-consent to \"fs:read\".",            ko: "코어 fs 소켓 없음 — \"fs:read\" 권한을 재동의하세요." },
       "empty.no-dir":       { en: "Project transcript directory not found.\n$1",               ko: "프로젝트 트랜스크립트 디렉토리를 찾지 못함.\n$1" },
       "empty.session-wait": { en: "Session $1 — waiting for conversation…",                   ko: "현재 세션 $1 — 대화가 오가면 표시됩니다." },
-      "empty.no-session":   { en: "No claude session found — will appear when started.",       ko: "현재 claude 세션을 찾지 못함 — 대화가 시작되면 표시됩니다." },
+      "empty.no-session":   { en: "Start a conversation.",                                       ko: "대화를 시작하세요." },
     };
     const t = (k, ...args) => {
       const s = I18N[k];
