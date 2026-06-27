@@ -23,7 +23,8 @@
     "terminal",
     "terminal:read",
     "terminal:write",
-    "fs:read"
+    "fs:read",
+    "clipboard:write"
   ],
   "contributes": {
     "commands": [
