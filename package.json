@@ -6,7 +6,8 @@
   "scripts": {
     "test": "vitest run",
     "doctor": "soksak-plugin-doctor",
-    "prepublishOnly": "npm run doctor"
+    "prepublishOnly": "npm run doctor",
+    "test-unit": "vitest run"
   },
   "devDependencies": {
     "vitest": "^4",
