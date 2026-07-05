@@ -1749,9 +1749,9 @@ export default {
 
     // ── 명령 contributes ───────────────────────────────────────────────────────
     const pick = (p) => (p && p.paneId) || lastPaneId;
-    const reg = (n, description, triggers, params, h) =>
+    const reg = (n, description, triggers, params, h, message) =>
       ctx.subscriptions.push(
-        app.commands.register(n, { description, triggers, params, handler: h }),
+        app.commands.register(n, { description, triggers, params, handler: h, message }),
       );
     const PANE_PARAM = {
       paneId: { type: "string", description: "대상 패널 id(생략 = 최근 claude 패널)" },
@@ -1766,6 +1766,7 @@ export default {
         if (id) toggle(id);
         return { paneId: id ?? null };
       },
+      (d) => (d.paneId ? "Claude GUI를 전환했습니다." : "대상 claude 패널이 없습니다."),
     );
     reg(
       "open",
@@ -1777,6 +1778,7 @@ export default {
         if (id) open(id);
         return { paneId: id ?? null, open: !!id };
       },
+      (d) => (d.open ? "Claude GUI를 열었습니다." : "열 claude 패널이 없습니다."),
     );
     reg(
       "close",
@@ -1788,6 +1790,7 @@ export default {
         if (id) close(id);
         return { paneId: id ?? null, open: false };
       },
+      (d) => (d.paneId ? "Claude GUI를 닫았습니다." : "닫을 claude 패널이 없습니다."),
     );
     // 입력 + 즉시 상태 반환(선배 요청). 비동기 — return 은 enqueue 직후 상태(held/다이얼로그
     // 대기/awaiting), 최종 "실제 입력(L3)"은 queue 명령으로 폴링. GUI 미오픈이면 자동 open.
@@ -1801,14 +1804,14 @@ export default {
       },
       (params) => {
         const id = pick(params);
-        if (!id) return { paneId: null, error: "claude 패널 없음" };
+        if (!id) return { ok: false, code: "NO_TARGET", message: "claude 패널 없음" };
         const text = String(params.text == null ? "" : params.text);
-        if (!text.trim()) return { paneId: id, error: "빈 텍스트" };
+        if (!text.trim()) return { ok: false, code: "INVALID_INPUT", message: "빈 텍스트" };
         const p = panes.get(id);
-        if (!p) return { paneId: id, error: "패널 상태 없음" };
+        if (!p) return { ok: false, code: "NO_TARGET", message: "패널 상태 없음" };
         if (!p.queue) open(id); // 큐는 오버레이에서 생성 — 없으면 연다
         const q = panes.get(id)?.queue;
-        if (!q) return { paneId: id, error: "큐 생성 실패(terminal:write 필요)" };
+        if (!q) return { ok: false, code: "INTERNAL", message: "큐 생성 실패(terminal:write 필요)" };
         q.enqueue(text);
         const term = app.terminal;
         const cls =
@@ -1817,6 +1820,7 @@ export default {
             : "unknown";
         return { paneId: id, classify: cls, queue: q.snapshot() };
       },
+      (d) => `입력을 큐에 넣었습니다(대기 ${(d.queue ?? []).length}개).`,
     );
     // GUI 로 화면 이동 = 오버레이 열고 입력창(textarea)에 포커스. 사용자가 GUI 입력으로 가는 동작.
     reg(
@@ -1826,13 +1830,14 @@ export default {
       PANE_PARAM,
       (params) => {
         const id = pick(params);
-        if (!id) return { paneId: null, error: "claude 패널 없음" };
+        if (!id) return { ok: false, code: "NO_TARGET", message: "claude 패널 없음" };
         if (!panes.get(id)?.open) open(id);
         const p = panes.get(id);
-        if (!p || !p.ta) return { paneId: id, error: "입력창 없음" };
+        if (!p || !p.ta) return { ok: false, code: "NO_TARGET", message: "입력창 없음" };
         p.ta.focus();
         return { paneId: id, open: !!p.open, focused: document.activeElement === p.ta };
       },
+      (d) => "GUI 입력창에 포커스했습니다.",
     );
     // 입력창에 실제 입력 = textarea 에 값 넣고 진짜 Enter keydown 을 디스패치 → GUI 의 send
     // 핸들러(ta.value 읽어 큐 enqueue)를 그대로 실행. 우회 없이 textarea→Enter→큐 글루를 탄다.
@@ -1843,12 +1848,12 @@ export default {
       { ...PANE_PARAM, text: { type: "string", description: "입력창에 칠 텍스트", required: true } },
       (params) => {
         const id = pick(params);
-        if (!id) return { paneId: null, error: "claude 패널 없음" };
+        if (!id) return { ok: false, code: "NO_TARGET", message: "claude 패널 없음" };
         if (!panes.get(id)?.open) open(id);
         const p = panes.get(id);
-        if (!p || !p.ta) return { paneId: id, error: "입력창 없음" };
+        if (!p || !p.ta) return { ok: false, code: "NO_TARGET", message: "입력창 없음" };
         const text = String(params.text == null ? "" : params.text);
-        if (!text.trim()) return { paneId: id, error: "빈 텍스트" };
+        if (!text.trim()) return { ok: false, code: "INVALID_INPUT", message: "빈 텍스트" };
         p.ta.focus();
         p.ta.value = text;
         p.ta.dispatchEvent(new Event("input", { bubbles: true }));
@@ -1857,6 +1862,7 @@ export default {
         );
         return { paneId: id, queue: p.queue ? p.queue.snapshot() : [] };
       },
+      (d) => `입력창에 입력했습니다(대기 ${(d.queue ?? []).length}개).`,
     );
     // 현재 큐 스냅샷(비동기 진행 폴링용). 각 항목 {text,state,reason}.
     reg(
@@ -1869,6 +1875,7 @@ export default {
         const p = id ? panes.get(id) : null;
         return { paneId: id ?? null, queue: p && p.queue ? p.queue.snapshot() : [] };
       },
+      (d) => `대기 ${(d.queue ?? []).length}개.`,
     );
     // 오버레이 렌더 상태 introspection(e2e 결정적 단언용). DOM 을 소켓이 못 보므로 플러그인이 노출.
     reg(
@@ -1896,6 +1903,7 @@ export default {
               : "unknown",
         };
       },
+      (d) => (d.open ? "오버레이가 열려 있습니다." : "오버레이가 닫혀 있습니다."),
     );
 
     ctx.subscriptions.push({
