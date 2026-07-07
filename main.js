@@ -1749,13 +1749,15 @@ export default {
 
     // ── 명령 contributes ───────────────────────────────────────────────────────
     const pick = (p) => (p && p.paneId) || lastPaneId;
-    const reg = (n, description, triggers, params, h, message) =>
+    // hint = 다음 단계 제시(최대 3, 코어 CommandSpec.hint 와 동형) — 지시 아니라 가능성의 제시.
+    const reg = (n, description, triggers, params, h, message, hint) =>
       ctx.subscriptions.push(
-        app.commands.register(n, { description, triggers, params, handler: h, message }),
+        app.commands.register(n, { description, triggers, params, handler: h, message, hint }),
       );
     const PANE_PARAM = {
       paneId: { type: "string", description: "대상 패널 id(생략 = 최근 claude 패널)" },
     };
+    const CMD_NS = "plugin.soksak-plugin-agent-claude-gui"; // plugin.json id — hint cmd 문자열용
     reg(
       "toggle",
       "Toggle the Claude GUI overlay on the active pane. Use when switching between TUI and GUI view.",
@@ -1779,6 +1781,15 @@ export default {
         return { paneId: id ?? null, open: !!id };
       },
       (d) => (d.open ? "Claude GUI를 열었습니다." : "열 claude 패널이 없습니다."),
+      (d) =>
+        d.paneId
+          ? [
+              {
+                cmd: `sok ${CMD_NS}.send '{"paneId":"${d.paneId}","text":"<보낼 텍스트>"}'`,
+                why: "claude 에 텍스트를 보낼 수 있습니다.",
+              },
+            ]
+          : [],
     );
     reg(
       "close",
@@ -1821,6 +1832,19 @@ export default {
         return { paneId: id, classify: cls, queue: q.snapshot() };
       },
       (d) => `입력을 큐에 넣었습니다(대기 ${(d.queue ?? []).length}개).`,
+      (d) =>
+        d.paneId
+          ? [
+              {
+                cmd: `sok ${CMD_NS}.queue '{"paneId":"${d.paneId}"}'`,
+                why: "큐가 비었는지 확인해 실제 전달(L3)을 확인할 수 있습니다.",
+              },
+              {
+                cmd: `sok ${CMD_NS}.state '{"paneId":"${d.paneId}"}'`,
+                why: "오버레이에 반영된 전체 상태를 확인할 수 있습니다.",
+              },
+            ]
+          : [],
     );
     // GUI 로 화면 이동 = 오버레이 열고 입력창(textarea)에 포커스. 사용자가 GUI 입력으로 가는 동작.
     reg(
@@ -1838,6 +1862,15 @@ export default {
         return { paneId: id, open: !!p.open, focused: document.activeElement === p.ta };
       },
       (d) => "GUI 입력창에 포커스했습니다.",
+      (d) =>
+        d.paneId
+          ? [
+              {
+                cmd: `sok ${CMD_NS}.type '{"paneId":"${d.paneId}","text":"<입력할 텍스트>"}'`,
+                why: "포커스된 입력창에 텍스트를 입력하고 Enter 로 보낼 수 있습니다.",
+              },
+            ]
+          : [],
     );
     // 입력창에 실제 입력 = textarea 에 값 넣고 진짜 Enter keydown 을 디스패치 → GUI 의 send
     // 핸들러(ta.value 읽어 큐 enqueue)를 그대로 실행. 우회 없이 textarea→Enter→큐 글루를 탄다.
@@ -1863,6 +1896,19 @@ export default {
         return { paneId: id, queue: p.queue ? p.queue.snapshot() : [] };
       },
       (d) => `입력창에 입력했습니다(대기 ${(d.queue ?? []).length}개).`,
+      (d) =>
+        d.paneId
+          ? [
+              {
+                cmd: `sok ${CMD_NS}.queue '{"paneId":"${d.paneId}"}'`,
+                why: "큐가 비었는지 확인해 실제 전달(L3)을 확인할 수 있습니다.",
+              },
+              {
+                cmd: `sok ${CMD_NS}.state '{"paneId":"${d.paneId}"}'`,
+                why: "오버레이에 반영된 전체 상태를 확인할 수 있습니다.",
+              },
+            ]
+          : [],
     );
     // 현재 큐 스냅샷(비동기 진행 폴링용). 각 항목 {text,state,reason}.
     reg(

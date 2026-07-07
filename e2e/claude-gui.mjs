@@ -117,8 +117,8 @@ async function activePane(arg) {
   if (arg) return arg;
   const t = await rpc("state.tree");
   const proj = (t.projects || []).find((p) => p.active) || t.projects[0];
-  const content = proj.contents.find((c) => c.active) || proj.contents[0];
-  for (const g of content.panels || [])
+  const sheet = proj.sheets.find((c) => c.active) || proj.sheets[0];
+  for (const g of sheet.panels || [])
     for (const v of g.views || [])
       if (v.kind === "terminal") return v.focusedPaneId || v.id;
   throw new Error("터미널 pane 없음");
