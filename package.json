@@ -12,5 +12,11 @@
   "devDependencies": {
     "vitest": "^4",
     "soksak-plugin-doctor": "github:soksak-ai/soksak-plugin-doctor"
+  },
+  "soksakRelease": {
+    "kind": "plugin",
+    "id": "soksak-plugin-agent-claude-gui",
+    "repository": "https://github.com/soksak-ai/soksak-plugin-agent-claude-gui",
+    "manifest": "release.json"
   }
 }
