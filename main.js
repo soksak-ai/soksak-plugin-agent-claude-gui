@@ -264,6 +264,29 @@ export function pickActiveSession(children, since) {
   return jsonls.length ? jsonls[0].name.replace(/\.jsonl$/, "") : null;
 }
 
+// rail `sessions` 뷰의 행 모델 — 감지된 claude pane(panes) + ai.session.find 캐시(found) +
+// 라이브 오버레이 conv 를 한 행으로 합성한다. 라이브 conv.session(오버레이가 fs.watch 로 /resume
+// 까지 추종)이 find 캐시보다 우선한다. model 은 conv.stats 실측에서만 — 추정 금지, 없으면 null.
+// 행 순서 = 입력(감지) 순서, 안정키 = paneId.
+export function buildSessionRows(panes, found) {
+  const rows = [];
+  const f = found || new Map();
+  for (const p of panes || []) {
+    if (!p || !p.paneId) continue;
+    const hit = f.get(p.paneId) || null;
+    const live = (p.conv && p.conv.session) || null;
+    rows.push({
+      paneId: p.paneId,
+      cwd: p.cwd || "",
+      program: (hit && hit.kind) || "claude",
+      session: live || (hit && hit.sessionId) || null,
+      model: (p.conv && p.conv.stats && p.conv.stats.model) || null,
+      open: !!p.open,
+    });
+  }
+  return rows;
+}
+
 // 슬래시 명령은 transcript 에 <command-name>/clear</command-name> 등으로 저장된다. raw 로 토하지
 // 말고 깔끔히 렌더하기 위해 파싱한다. command(이름+인자) / stdout(출력) / null(명령 아님).
 export function parseCommandTags(text) {
@@ -335,6 +358,9 @@ export default {
       "empty.no-dir":       { en: "Project transcript directory not found.\n$1",               ko: "프로젝트 트랜스크립트 디렉토리를 찾지 못함.\n$1" },
       "empty.session-wait": { en: "Session $1 — waiting for conversation…",                   ko: "현재 세션 $1 — 대화가 오가면 표시됩니다." },
       "empty.no-session":   { en: "Start a conversation.",                                       ko: "대화를 시작하세요." },
+      "rail.empty":         { en: "No AI sessions detected.\nRun claude in a terminal.",         ko: "감지된 AI 세션이 없습니다.\n터미널에서 claude 를 실행하세요." },
+      "rail.waiting":       { en: "waiting for session…",                                        ko: "세션 대기 중…" },
+      "rail.row.title":     { en: "Go to pane $1",                                               ko: "$1 패널로 이동" },
     };
     const t = (k, ...args) => {
       const s = I18N[k];
@@ -736,6 +762,7 @@ export default {
         active: p.open,
         onClick: () => toggle(paneId),
       });
+      renderRail(); // 오버레이 열림/닫힘(라이브 점)·pane 등장이 rail 에 반영되는 지점
     }
 
     // fresh=true: claude 가 방금 시작(command.started) → detectAt 기록. 그 이후에 생긴
@@ -777,6 +804,197 @@ export default {
         lastPaneId = keys.length ? keys[keys.length - 1] : null;
       }
     }
+
+    // ── AI 세션 rail 뷰(`sessions`) — 상주형(핀으로 사는 뷰, 결부 선언 없음) ────────
+    // 목록 = 감지된 claude pane(panes 그대로 — 별도 상태 없음). 세션 식별 = 코어
+    // ai.session.find 재조회 + 라이브 오버레이 conv(우선, /resume 추종). 갱신은 전부 이벤트 구동:
+    //   · command.started/finished — 멤버십(이 플러그인의 기존 감지 채널)
+    //   · turn.ended — 코어 세션 계보 확정값(agentKind/sessionId 동반)
+    //   · pane 프로젝트 dir fs.watch — 오버레이 conv 와 같은 채널(첫 세션 등장·/resume 전이)
+    // 폴링 없음. 클릭 = 해당 pane 으로 view.activate(코어 명령).
+    const railMounts = new Map(); // container → listEl
+    const foundSessions = new Map(); // paneId → {sessionId, kind}|null — ai.session.find 캐시
+    const railRoots = new Map(); // canonical root → fs.watch disposable
+    const railPaneRoot = new Map(); // paneId → 감시 중인 canonical root
+    let railFindTimer = null;
+
+    const RAIL_CSS = `
+:host { all: initial; }
+.sr-root{position:absolute;inset:0;display:flex;flex-direction:column;overflow:hidden;
+  font:12px/1.45 ${UI_FONT};color:var(--fg,#e6e6e6);user-select:none;-webkit-user-select:none}
+.sr-list{flex:1;overflow-y:auto;padding:6px}
+.sr-list::-webkit-scrollbar{-webkit-appearance:none;width:4px}
+.sr-list::-webkit-scrollbar-track{background:transparent}
+.sr-list::-webkit-scrollbar-thumb{background:rgba(127,127,127,.22);border-radius:2px}
+.sr-row{padding:7px 9px;border-radius:8px;cursor:pointer;display:flex;flex-direction:column;gap:3px}
+.sr-row:hover{background:var(--accbg,rgba(127,127,127,.12))}
+.sr-top{display:flex;align-items:center;gap:6px;min-width:0}
+.sr-live{color:#3fb950;font-size:9px;flex:0 0 auto}
+.sr-prog{font-size:11px;padding:0 7px;border-radius:6px;background:var(--accbg,rgba(127,127,127,.15));
+  color:var(--acc,#79c0ff);flex:0 0 auto}
+.sr-model{font-size:10px;opacity:.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr-sess{font-family:${MONO};font-size:11px;opacity:.85}
+.sr-sess.sr-wait{font-family:${UI_FONT};opacity:.45}
+.sr-loc{display:flex;align-items:baseline;gap:6px;min-width:0;font-size:10.5px;opacity:.55}
+.sr-dirname{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sr-pane{font-family:${MONO};font-size:9.5px;flex:0 0 auto}
+.sr-empty{opacity:.5;padding:14px 10px;text-align:center;white-space:pre-wrap}
+`;
+
+    function renderRail() {
+      if (!railMounts.size) return;
+      const rows = buildSessionRows([...panes.values()], foundSessions);
+      for (const listEl of railMounts.values()) renderRailList(listEl, rows);
+    }
+
+    function renderRailList(listEl, rows) {
+      listEl.replaceChildren();
+      if (!rows.length) {
+        listEl.appendChild(el("div", "sr-empty", t("rail.empty")));
+        return;
+      }
+      for (const r of rows) {
+        const row = el("div", "sr-row");
+        setNode(row, "sess", r.paneId); // 클릭 = 해당 pane 활성화. 안정키 = paneId
+        row.title = t("rail.row.title", r.paneId);
+        const top = el("div", "sr-top");
+        if (r.open) top.appendChild(el("span", "sr-live", "●")); // 오버레이 열림(라이브 tail)
+        top.appendChild(el("span", "sr-prog", r.program));
+        if (r.model) top.appendChild(el("span", "sr-model", r.model));
+        const sess = r.session
+          ? el("div", "sr-sess", r.session.slice(0, 8))
+          : el("div", "sr-sess sr-wait", t("rail.waiting"));
+        if (r.session) sess.title = r.session;
+        const loc = el("div", "sr-loc");
+        const base =
+          String(r.cwd || "").replace(/\/+$/, "").split("/").pop() || r.cwd || "";
+        const dir = el("span", "sr-dirname", base);
+        dir.title = r.cwd || "";
+        loc.append(dir, el("span", "sr-pane", r.paneId));
+        row.append(top, sess, loc);
+        row.addEventListener("click", () => {
+          void app.commands.execute("view.activate", { view: r.paneId }).catch(() => {});
+        });
+        listEl.appendChild(row);
+      }
+    }
+
+    // 이벤트 코얼레싱(트레일링 250ms) — fs-change 버스트(JSONL append 연쇄)를 재조회 1회로
+    // 합친다. 타이머는 이벤트 도착 시에만 무장(주기 조회 없음 — 폴링 아님).
+    function scheduleRailFind() {
+      if (!railMounts.size || railFindTimer != null) return;
+      railFindTimer = setTimeout(() => {
+        railFindTimer = null;
+        void refreshRailFinds();
+      }, 250);
+    }
+
+    // 감지 pane 전수의 세션을 코어 ai.session.find 로 재조회(호출처가 전부 이벤트 — 폴링 아님).
+    async function refreshRailFinds() {
+      if (!railMounts.size) return;
+      await Promise.all(
+        [...panes.values()].map(async (p) => {
+          try {
+            const r = await app.commands.execute("ai.session.find", { cwd: p.cwd });
+            if (!panes.has(p.paneId)) return; // 조회 중 pane 제거됨
+            const s = (r && r.data && r.data.session) || null;
+            foundSessions.set(
+              p.paneId,
+              s ? { sessionId: s.session_id || null, kind: s.kind || "claude" } : null,
+            );
+          } catch {
+            /* 다음 이벤트에 재시도 */
+          }
+        }),
+      );
+      renderRail();
+    }
+
+    function disposeQuiet(d) {
+      try {
+        if (!d) return;
+        d.dispose ? d.dispose() : d();
+      } catch {
+        /* skip */
+      }
+    }
+
+    // pane 프로젝트 dir 감시 — 오버레이 conv 와 같은 채널(코어 watcher fs-change 구독).
+    // /resume 전이·첫 세션 등장을 이벤트로 잡는다. rail 미마운트면 감시 0(전부 해제).
+    async function syncRailWatches() {
+      if (!railMounts.size) {
+        for (const d of railRoots.values()) disposeQuiet(d);
+        railRoots.clear();
+        railPaneRoot.clear();
+        return;
+      }
+      for (const p of [...panes.values()]) {
+        if (railPaneRoot.has(p.paneId)) continue;
+        try {
+          const root = (await app.fs.list(projectDir(p.cwd), { meta: true })).root;
+          if (!root || !panes.has(p.paneId) || !railMounts.size) continue;
+          railPaneRoot.set(p.paneId, root);
+          if (!railRoots.has(root)) {
+            railRoots.set(root, app.fs.watch(root, () => scheduleRailFind()));
+          }
+        } catch {
+          // dir 미존재(첫 세션 전) — find 도 null. 다음 이벤트(railPanesChanged)에 재시도.
+        }
+      }
+      // 사라진 pane 의 감시 해제(같은 root 를 다른 pane 이 쓰면 유지).
+      for (const [paneId, root] of [...railPaneRoot]) {
+        if (panes.has(paneId)) continue;
+        railPaneRoot.delete(paneId);
+        if (![...railPaneRoot.values()].includes(root)) {
+          disposeQuiet(railRoots.get(root));
+          railRoots.delete(root);
+        }
+      }
+    }
+
+    // 멤버십 변경(command.started/finished) — 캐시 정리 + 재렌더 + find 재조회 + 감시 동기화.
+    function railPanesChanged() {
+      for (const k of [...foundSessions.keys()]) {
+        if (!panes.has(k)) foundSessions.delete(k);
+      }
+      renderRail();
+      if (!railMounts.size) return;
+      scheduleRailFind();
+      void syncRailWatches();
+    }
+
+    ctx.subscriptions.push(
+      app.ui.registerView("sessions", {
+        mount(container) {
+          container.style.position = "relative";
+          const shadow = container.shadowRoot ?? container.attachShadow({ mode: "open" });
+          shadow.replaceChildren();
+          const style = document.createElement("style");
+          style.textContent = RAIL_CSS;
+          shadow.appendChild(style);
+          const rootEl = document.createElement("div");
+          rootEl.className = "sr-root";
+          const listEl = document.createElement("div");
+          listEl.className = "sr-list";
+          rootEl.appendChild(listEl);
+          shadow.appendChild(rootEl);
+          railMounts.set(container, listEl);
+          renderRail();
+          scheduleRailFind();
+          void syncRailWatches();
+        },
+        unmount(container) {
+          railMounts.delete(container);
+          if (!railMounts.size) {
+            if (railFindTimer != null) {
+              clearTimeout(railFindTimer);
+              railFindTimer = null;
+            }
+            void syncRailWatches(); // rail 0 → 감시 전부 해제
+          }
+        },
+      }),
+    );
 
     // ── 헤더 ────────────────────────────────────────────────────────────────
     function buildHeader(conv, cwd, onClose) {
@@ -1699,12 +1917,28 @@ export default {
     // ── 코어 범용 소켓 구독(폴링 없음) ───────────────────────────────────────────
     ctx.subscriptions.push(
       app.events.on("command.started", ({ paneId, commandLine, cwd }) => {
-        if (CLAUDE_RE.test(commandLine)) ensure(paneId, cwd, true);
+        if (CLAUDE_RE.test(commandLine)) {
+          ensure(paneId, cwd, true);
+          railPanesChanged();
+        }
       }),
     );
     ctx.subscriptions.push(
       app.events.on("command.finished", ({ paneId }) => {
-        if (panes.has(paneId)) remove(paneId);
+        if (panes.has(paneId)) {
+          remove(paneId);
+          railPanesChanged();
+        }
+      }),
+    );
+    // 코어 세션 계보 확정값 — claude 명령 블록이 닫힐 때 agentKind/sessionId 동반(terminal:read).
+    // 멤버십은 command.finished 가 처리하므로 여기선 캐시 갱신만(남아 있는 pane 한정).
+    ctx.subscriptions.push(
+      app.events.on("turn.ended", (e) => {
+        if (!e || !e.paneId || !e.agentKind || !e.sessionId) return;
+        if (!panes.has(e.paneId)) return;
+        foundSessions.set(e.paneId, { sessionId: e.sessionId, kind: e.agentKind });
+        renderRail();
       }),
     );
     // locale 변경 시 열려 있는 오버레이의 동적 문자열 갱신.
@@ -1736,6 +1970,7 @@ export default {
             if (qbox) renderQueue(qbox, p.queue.snapshot());
           }
         }
+        renderRail(); // rail 의 빈 상태·대기 문구 갱신
       }),
     );
 
@@ -1954,6 +2189,14 @@ export default {
 
     ctx.subscriptions.push({
       dispose() {
+        if (railFindTimer != null) {
+          clearTimeout(railFindTimer);
+          railFindTimer = null;
+        }
+        railMounts.clear();
+        for (const d of railRoots.values()) disposeQuiet(d);
+        railRoots.clear();
+        railPaneRoot.clear();
         for (const id of [...panes.keys()]) remove(id);
       },
     });

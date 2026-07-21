@@ -22,6 +22,19 @@
     "fs:read"
   ],
   "contributes": {
+    "views": [
+      {
+        "id": "sessions",
+        "title": {
+          "en": "AI Sessions",
+          "ko": "AI 세션"
+        },
+        "icon": "🤖",
+        "placements": [
+          "rail"
+        ]
+      }
+    ],
     "commands": [
       {
         "name": "toggle",
@@ -128,6 +141,13 @@
         "description": {
           "ko": "\uc11c\ube0c\uc5d0\uc774\uc804\ud2b8 \ud328\ub110 \ud5e4\ub354(\uc548\uc815\ud0a4=agent id)",
           "en": "subagent panel header (key = agent id)"
+        }
+      },
+      {
+        "id": "sess",
+        "description": {
+          "ko": "rail \uc138\uc158 \ubaa9\ub85d \ud589 \u2014 sess/<paneId>. \ud074\ub9ad\ud558\uba74 \uadf8 pane \ubdf0\ub97c \ud65c\uc131\ud654\ud569\ub2c8\ub2e4",
+          "en": "rail session list row \u2014 sess/<paneId>. Click activates that pane view"
         }
       }
     ]
